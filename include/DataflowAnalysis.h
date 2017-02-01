@@ -2,7 +2,9 @@
 #ifndef DATAFLOW_ANALYSIS_H
 #define DATAFLOW_ANALYSIS_H
 
+#include <algorithm>
 #include <deque>
+#include <numeric>
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
