@@ -43,7 +43,7 @@ Running
 
 First suppose that you have a program compiled to bitcode:
 
-    clang -g -c -emit-llvm ../llvm-dataflow-analysis/test/filepolicy/01straightCorrect.c -o 01.bc
+    clang -g -c -O1 -emit-llvm ../llvm-dataflow-analysis/test/filepolicy/01straightCorrect.c -o 01.bc
 
 Running the file policy analyzer:
 
