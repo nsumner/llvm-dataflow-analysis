@@ -1,9 +1,10 @@
 #include <stdio.h>
 
-void
-foo() {
+int
+main() {
   FILE *outfile = fopen("/tmp/doesntmatter", "w");
-  fclose(outfile);
   fprintf(outfile, "Marvelous!\n");
+  fclose(outfile);
+  return 0;
 }
 

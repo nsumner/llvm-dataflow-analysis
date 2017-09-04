@@ -1,7 +1,9 @@
 #include <stdio.h>
 
-void
-foo(unsigned cond) {
+extern unsigned cond;
+
+int
+main() {
   FILE *outfile;
   if (cond) {
     outfile = fopen("/tmp/doesntmatter1", "w");
@@ -12,5 +14,6 @@ foo(unsigned cond) {
   }
   fprintf(outfile, "Marvelous!\n");
   fclose(outfile);
+  return 0;
 }
 

@@ -155,8 +155,10 @@ class ConstantTransfer {
 
 public:
   void
-  operator()(llvm::Instruction& i, ConstantState& state) {
-    if (auto* binOp = llvm::dyn_cast<llvm::BinaryOperator>(&i)) {
+  operator()(llvm::Value& i, ConstantState& state) {
+    if (auto* constant = llvm::dyn_cast<llvm::Constant>(&i)) {
+      state[&i] = ConstantValue{constant};
+    } else if (auto* binOp = llvm::dyn_cast<llvm::BinaryOperator>(&i)) {
       state[binOp] = evaluateBinaryOperator(*binOp, state);
     } else if (auto* castOp = llvm::dyn_cast<llvm::CastInst>(&i)) {
       state[castOp] = evaluateCast(*castOp, state);
@@ -165,15 +167,6 @@ public:
     }
   }
 };
-
-
-static auto
-computeConstants(llvm::Function& f) {
-  analysis::ForwardDataflowAnalysis<ConstantValue,
-                                    ConstantTransfer,
-                                    ConstantMeet> analysis;
-  return analysis.computeForwardDataflow(f);
-}
 
 
 static void
@@ -247,12 +240,21 @@ main(int argc, char** argv) {
     return -1;
   }
 
-  for (auto& f : *module) {
-    if (f.isDeclaration()) {
-      continue;
+  auto* mainFunction = module->getFunction("main");
+  if (!mainFunction) {
+    llvm::report_fatal_error("Unable to find main function.");
+  }
+
+  using Value    = ConstantValue;
+  using Transfer = ConstantTransfer;
+  using Meet     = ConstantMeet;
+  using Analysis = analysis::ForwardDataflowAnalysis<Value, Transfer, Meet>;
+  Analysis analysis{*module, mainFunction};
+  auto results = analysis.computeForwardDataflow();
+  for (auto& [context, contextResults] : results) {
+    for (auto& [function, functionResults] : contextResults) {
+      printConstantArguments(functionResults);
     }
-    auto results = computeConstants(f);
-    printConstantArguments(results);
   }
 
   return 0;

@@ -43,9 +43,11 @@ Running
 
 First suppose that you have a program compiled to bitcode:
 
-    clang -g -c -O1 -emit-llvm ../llvm-dataflow-analysis/test/filepolicy/01straightCorrect.c -o 01.bc
+    clang -g -c -O1 -emit-llvm ../llvm-dataflow-analysis/test/filepolicy/c/01straightCorrect.c -o 01.bc
 
 Running the file policy analyzer:
 
     bin/filepolicy 01.bc
+
+The tests in the `tests` directory can be run using the provided `Makefile`s
 

@@ -67,23 +67,24 @@ public:
 class FilePolicyTransfer {
 public:
   void
-  operator()(llvm::Instruction& i, FileState& state) {
+  operator()(llvm::Value& v, FileState& state) {
     // Conservatively model all loaded info as unknown
-    if (auto* li = dyn_cast<LoadInst>(&i)) {
+    if (auto* li = dyn_cast<LoadInst>(&v)) {
       state[li].set();
       return;
     }
 
-    const CallSite cs{&i};
+    const CallSite cs{&v};
     const auto* fun = getCalledFunction(cs);
     // Pretend that indirect calls & non calls don't exist for this analysis
     if (!fun) {
+      state[&v].set();
       return;
     }
 
     // Apply the transfer function to the absract state
     if (fun->getName() == "fopen") {
-      auto& value = state[&i];
+      auto& value = state[&v];
       value.reset();
       value.set(OPEN);
     } else if (fun->getName() == "fclose") {
@@ -94,15 +95,6 @@ public:
     }
   }
 };
-
-
-static auto
-computeFilePolicyAnalysis(llvm::Function& f) {
-  analysis::ForwardDataflowAnalysis<FileValue,
-                                    FilePolicyTransfer,
-                                    FilePolicyMeet> analysis;
-  return analysis.computeForwardDataflow(f);
-}
 
 
 static bool
@@ -202,13 +194,23 @@ main(int argc, char** argv) {
     return -1;
   }
 
+  auto* mainFunction = module->getFunction("main");
+  if (!mainFunction) {
+    llvm::report_fatal_error("Unable to find main function.");
+  }
+
+  using Value    = FileValue;
+  using Transfer = FilePolicyTransfer;
+  using Meet     = FilePolicyMeet;
+  using Analysis = analysis::ForwardDataflowAnalysis<Value, Transfer, Meet>;
+  Analysis analysis{*module, mainFunction};
+  auto results = analysis.computeForwardDataflow();
+
   std::vector<std::pair<llvm::Instruction*, unsigned>> errors;
-  for (auto& f : *module) {
-    if (f.isDeclaration()) {
-      continue;
+  for (auto& contextResults : results) {
+    for (auto& [function, functionResults] : contextResults.second) {
+      collectFileUseBugs(functionResults, std::back_inserter(errors));
     }
-    auto results = computeFilePolicyAnalysis(f);
-    collectFileUseBugs(results, std::back_inserter(errors));
   }
 
   printErrors(errors);
