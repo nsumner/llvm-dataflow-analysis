@@ -9,6 +9,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/PostOrderIterator.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/IR/CFG.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/InstIterator.h"
@@ -175,16 +176,130 @@ public:
     llvm_unreachable("unimplemented meet");
   }
 
+  void print(llvm::raw_ostream& out, AbstractValue& value) { }
+  void printState(llvm::raw_ostream& out, AbstractState<AbstractValue>& state) {
+    out << "DUMP ";
+    for (auto& kvPair : state) {
+      this->asSubClass().print(out, kvPair.second);
+    }
+    out << "\n";
+  }
+
 private:
   SubClass& asSubClass() { return static_cast<SubClass&>(*this); };
+};
+
+
+class Forward {
+public:
+  static auto getInstructions(llvm::BasicBlock& bb) {
+    return llvm::iterator_range<decltype(bb.begin())>(bb);
+  };
+  static auto getFunctionTraversal(llvm::Function& f) {
+    return llvm::ReversePostOrderTraversal<llvm::Function*>(&f);
+  }
+  static auto* getEntryKey(llvm::BasicBlock& bb) {
+    return &bb;
+  }
+  static auto* getExitKey(llvm::BasicBlock& bb) {
+    return bb.getTerminator();
+  }
+  static llvm::Value* getFunctionValueKey(llvm::BasicBlock& bb) {
+    if (auto* ret = llvm::dyn_cast<llvm::ReturnInst>(bb.getTerminator())) {
+      return ret->getReturnValue();
+    }
+    return nullptr;
+  }
+  static auto getSuccessors(llvm::BasicBlock& bb) {
+    return llvm::successors(&bb);
+  }
+  static auto getPredecessors(llvm::BasicBlock& bb) {
+    return llvm::predecessors(&bb);
+  }
+  static bool shouldMeetPHI() { return true; }
+  template <class State, class Transfer, class Meet>
+  static bool prepareSummaryState(llvm::CallSite cs,
+                                  llvm::Function* callee,
+                                  State& state,
+                                  State& summaryState,
+                                  Transfer& transfer,
+                                  Meet& meet) {
+    unsigned index = 0;
+    bool needsUpdate = false;
+    for (auto& functionArg : callee->args()) {
+      auto* passedConcrete = cs.getArgument(index);
+      auto passedAbstract = state.find(passedConcrete);
+      if (passedAbstract == state.end()) {
+        transfer(*passedConcrete, state);
+        passedAbstract = state.find(passedConcrete);
+      }
+      auto& arg     = summaryState[&functionArg];
+      auto newState = meet({passedAbstract->second, arg});
+      needsUpdate |= !(newState == arg);
+      arg = newState;
+      ++index;
+    }
+    return needsUpdate;
+  }
+};
+
+
+class Backward {
+public:
+  static auto getInstructions(llvm::BasicBlock& bb) {
+    return llvm::reverse(bb);
+  };
+  static auto getFunctionTraversal(llvm::Function& f) {
+    return llvm::post_order<llvm::Function*>(&f);
+  }
+  static auto* getEntryKey(llvm::BasicBlock& bb) {
+    return &bb;
+  }
+  static auto* getExitKey(llvm::BasicBlock& bb) {
+    return &*bb.begin();
+  }
+  static llvm::Value* getFunctionValueKey(llvm::BasicBlock& bb) {
+    return (&bb == &bb.getParent()->getEntryBlock()) ? getExitKey(bb) : nullptr;
+  }
+  static auto getSuccessors(llvm::BasicBlock& bb) {
+    return llvm::predecessors(&bb);
+  }
+  static auto getPredecessors(llvm::BasicBlock& bb) {
+    return llvm::successors(&bb);
+  }
+  static bool shouldMeetPHI() { return false; }
+  template <class State, class Transfer, class Meet>
+  static bool prepareSummaryState(llvm::CallSite cs,
+                                  llvm::Function* callee,
+                                  State& state,
+                                  State& summaryState,
+                                  Transfer& transfer,
+                                  Meet& meet) {
+    // TODO: This would be better if it checked whether the new state at this
+    // function different from the old.
+    bool needsUpdate = false;
+    auto* passedConcrete = cs.getInstruction();
+    auto& passedAbstract = state.FindAndConstruct(passedConcrete);
+    for (auto& bb : *callee) {
+      if (auto* ret = llvm::dyn_cast<llvm::ReturnInst>(bb.getTerminator());
+          ret && ret->getReturnValue()) {
+        auto& retState = summaryState[ret->getReturnValue()];
+        auto newState = meet({passedAbstract.second, retState});
+        needsUpdate |= !(newState == retState);
+        retState = newState;
+      }
+    }
+    return needsUpdate;
+  }
 };
 
 
 template <typename AbstractValue,
           typename Transfer,
           typename Meet,
+          typename Direction=Forward,
           unsigned long ContextSize=2ul>
-class ForwardDataflowAnalysis {
+class DataflowAnalysis {
 public:
   using State   = AbstractState<AbstractValue>;
   using Context = std::array<llvm::Instruction*, ContextSize>;
@@ -199,7 +314,7 @@ public:
   using AllResults = llvm::DenseMap<Context, ContextResults, ContextMapInfo>;
 
 
-  ForwardDataflowAnalysis(llvm::Module& m,
+  DataflowAnalysis(llvm::Module& m,
                           llvm::ArrayRef<llvm::Function*> entryPoints) {
     for (auto* entry : entryPoints) {
       contextWork.add({Context{}, entry});
@@ -207,48 +322,49 @@ public:
   }
 
 
-  // computeForwardDataflow collects the dataflow facts for all instructions
+  // computeDataflow collects the dataflow facts for all instructions
   // in the program reachable from the entryPoints passed to the constructor.
   AllResults
-  computeForwardDataflow() {
+  computeDataflow() {
     while (!contextWork.empty()) {
       auto [context, function] = contextWork.take();
-      computeForwardDataflow(*function, context);
+      computeDataflow(*function, context);
     }
 
     return allResults;
   }
 
-  // computeForwardDataflow collects the dataflowfacts for all instructions
+  // computeDataflow collects the dataflowfacts for all instructions
   // within Function f with the associated execution context. Functions whose
   // results are required for the analysis of f will be transitively analyzed.
   DataflowResult<AbstractValue>
-  computeForwardDataflow(llvm::Function& f, const Context& context) {
+  computeDataflow(llvm::Function& f, const Context& context) {
     active.insert({context, &f});
 
     // First compute the initial outgoing state of all instructions
     FunctionResults results = allResults.FindAndConstruct(context).second
                                         .FindAndConstruct(&f).second;
-    if (results.find(&f) == results.end()) {
+    if (results.find(getSummaryKey(f)) == results.end()) {
       for (auto& i : llvm::instructions(f)) {
         results.FindAndConstruct(&i);
       }
     }
 
     // Add all blocks to the worklist in topological order for efficiency
-    llvm::ReversePostOrderTraversal<llvm::Function*> rpot(&f);
-    BasicBlockWorklist work(rpot.begin(), rpot.end());
+    auto traversal = Direction::getFunctionTraversal(f);
+    BasicBlockWorklist work(traversal.begin(), traversal.end());
 
     while (!work.empty()) {
       auto* bb = work.take();
 
       // Save a copy of the outgoing abstract state to check for changes.
-      const auto& oldEntryState = results[bb];
-      const auto oldExitState   = results[bb->getTerminator()];
+      const auto& oldEntryState = results[Direction::getEntryKey(*bb)];
+      const auto oldExitState   = results[Direction::getExitKey(*bb)];
 
-      // Merge the state coming in from all predecessors
+      // Merge the state coming in from all predecessors including the function
+      // summary (which contains arguments, etc.)
       auto state = mergeStateFromPredecessors(bb, results);
-      mergeInState(state, results[&f]);
+      mergeInState(state, results[getSummaryKey(f)]);
 
       // If we have already processed the block and no changes have been made to
       // the abstract input, we can skip processing the block. Otherwise, save
@@ -259,13 +375,14 @@ public:
       results[bb] = state;
 
       // Propagate through all instructions in the block
-      for (auto& i : *bb) {
+      for (auto& i : Direction::getInstructions(*bb)) {
         llvm::CallSite cs(&i);
         if (isAnalyzableCall(cs)) {
           analyzeCall(cs, state, context);
         } else {
           applyTransfer(i, state);
         }
+//meet.printState(llvm::outs(),state);
         results[&i] = state;
       }
 
@@ -276,12 +393,13 @@ public:
         continue;
       }
 
-      for (auto* s : llvm::successors(bb)) {
+      for (auto* s : Direction::getSuccessors(*bb)) {
         work.add(s);
       }
 
-      if (auto* ret = llvm::dyn_cast<llvm::ReturnInst>(bb->getTerminator())) {
-        results[&f][&f] = meet({results[&f][&f], state[ret->getReturnValue()]});
+      if (auto* key = Direction::getFunctionValueKey(*bb)) {
+        auto* summary = getSummaryKey(f);
+        results[&f][summary] = meet({results[&f][summary], state[key]});
       }
     }
 
@@ -331,23 +449,11 @@ public:
     auto& calledState  = allResults[newContext][callee];
     auto& summaryState = calledState[callee];
     bool needsUpdate   = summaryState.size() == 0;
-    unsigned index = 0;
-    for (auto& functionArg : callee->args()) {
-      auto* passedConcrete = cs.getArgument(index);
-      auto passedAbstract = state.find(passedConcrete);
-      if (passedAbstract == state.end()) {
-        transfer(*passedConcrete, state);
-        passedAbstract = state.find(passedConcrete);
-      }
-      auto& arg     = summaryState[&functionArg];
-      auto newState = meet({passedAbstract->second, arg});
-      needsUpdate |= !(newState == arg);
-      arg = newState;
-      ++index;
-    }
+
+    needsUpdate |= Direction::prepareSummaryState(cs, callee, state, summaryState, transfer, meet);
 
     if (!active.count(toCall) && needsUpdate) {
-      computeForwardDataflow(*callee, newContext);
+      computeDataflow(*callee, newContext);
     }
 
     state[cs.getInstruction()] = calledState[callee][callee];
@@ -366,6 +472,12 @@ private:
   llvm::DenseMap<ContextFunction, llvm::DenseSet<ContextFunction>> callers;
   llvm::DenseSet<ContextFunction> active;
 
+
+  static llvm::Value*
+  getSummaryKey(llvm::Function& f) {
+    return &f;
+  }
+
   void
   mergeInState(State& destination, const State& toMerge) {
     for (auto& valueStatePair : toMerge) {
@@ -383,8 +495,8 @@ private:
   mergeStateFromPredecessors(llvm::BasicBlock* bb, FunctionResults& results) {
     State mergedState = State{};
     mergeInState(mergedState, results[bb]);
-    for (auto* p : llvm::predecessors(bb)) {
-      auto predecessorFacts = results.find(p->getTerminator());
+    for (auto* p : Direction::getPredecessors(*bb)) {
+      auto predecessorFacts = results.find(Direction::getExitKey(*p));
       if (results.end() == predecessorFacts) {
         continue;
       }
@@ -409,8 +521,9 @@ private:
 
   void
   applyTransfer(llvm::Instruction& i, State& state) {
-    // All phis are explicit meet operations
-    if (auto* phi = llvm::dyn_cast<llvm::PHINode>(&i)) {
+    if (auto* phi = llvm::dyn_cast<llvm::PHINode>(&i);
+        phi && Direction::shouldMeetPHI()) {
+      // Phis can be explicit meet operations
       state[phi] = meetOverPHI(state, *phi);
     } else {
       transfer(i, state);

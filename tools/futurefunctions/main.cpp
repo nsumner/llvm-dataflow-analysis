@@ -1,4 +1,5 @@
 
+#include "llvm/ADT/SparseBitVector.h"
 #include "llvm/IR/CallSite.h"
 #include "llvm/IR/DebugInfo.h"
 #include "llvm/IR/LLVMContext.h"
@@ -23,14 +24,14 @@ using std::string;
 using std::unique_ptr;
 
 
-static cl::OptionCategory filePolicyCategory{"file policy options"};
+static cl::OptionCategory futureFunctionsCategory{"future functions options"};
 
 static cl::opt<string> inPath{cl::Positional,
                               cl::desc{"<Module to analyze>"},
                               cl::value_desc{"bitcode filename"},
                               cl::init(""),
                               cl::Required,
-                              cl::cat{filePolicyCategory}};
+                              cl::cat{futureFunctionsCategory}};
 
 
 static const llvm::Function *
@@ -44,70 +45,47 @@ getCalledFunction(const llvm::CallSite cs) {
 }
 
 
-enum PossibleFileValues {
-  OPEN,
-  CLOSED
-};
+using FunctionsValue  = llvm::SparseBitVector<>;
+using FunctionsState  = analysis::AbstractState<FunctionsValue>;
+using FunctionsResult = analysis::DataflowResult<FunctionsValue>;
 
 
-using FileValue  = std::bitset<2>;
-using FileState  = analysis::AbstractState<FileValue>;
-using FileResult = analysis::DataflowResult<FileValue>;
+static std::vector<const llvm::Function*> functions;
+static llvm::DenseMap<const llvm::Function*,size_t> functionIDs;
 
-
-class FilePolicyMeet : public analysis::Meet<FileValue, FilePolicyMeet> {
+class FunctionsMeet : public analysis::Meet<FunctionsValue, FunctionsMeet> {
 public:
-  FileValue
-  meetPair(FileValue& s1, FileValue& s2) const {
+  FunctionsValue
+  meetPair(FunctionsValue& s1, FunctionsValue& s2) const {
     return s1 | s2;
   }
 };
 
 
-class FilePolicyTransfer {
+class FunctionsTransfer {
 public:
   void
-  operator()(llvm::Value& v, FileState& state) {
-    // Conservatively model all loaded info as unknown
-    if (auto* li = dyn_cast<LoadInst>(&v)) {
-      state[li].set();
-      return;
-    }
-
+  operator()(llvm::Value& v, FunctionsState& state) {
     const CallSite cs{&v};
     const auto* fun = getCalledFunction(cs);
     // Pretend that indirect calls & non calls don't exist for this analysis
     if (!fun) {
-      state[&v].set();
       return;
     }
 
-    // Apply the transfer function to the absract state
-    if (fun->getName() == "fopen") {
-      auto& value = state[&v];
-      value.reset();
-      value.set(OPEN);
-    } else if (fun->getName() == "fclose") {
-      auto *closed = cs.getArgument(0);
-      auto& value = state[closed];
-      value.reset();
-      value.set(CLOSED);
+    auto [found, inserted] = functionIDs.insert({fun, functions.size()});
+    if (inserted) {
+      functions.push_back(fun);
     }
+    state[nullptr].set(found->second);
   }
 };
 
 
-static bool
-mayBeClosed(FileState& state, Value* arg) {
-  const auto found = state.find(arg);
-  return state.end() != found && found->second.test(CLOSED);
-}
-
-
 template <typename OutIterator>
 static void
-collectFileUseBugs(FileResult& fileStates, OutIterator errors) {
-  for (auto& [value,localState] : fileStates) {
+collectFollowers(FunctionsResult& followerStates, OutIterator followers) {
+  for (auto& [value,state] : followerStates) {
     auto* inst = llvm::dyn_cast<llvm::Instruction>(value);
     if (!inst) {
       continue;
@@ -119,19 +97,7 @@ collectFileUseBugs(FileResult& fileStates, OutIterator errors) {
       continue;
     }
 
-    // Check the incoming state for errors
-    auto& state = analysis::getIncomingState(fileStates, *inst);
-    if ((fun->getName() == "fread" || fun->getName() == "fwrite")
-        && mayBeClosed(state, cs.getArgument(3))) {
-      *errors++ = std::make_pair(inst, 3);
-      
-    } else if ((fun->getName() == "fprintf"
-             || fun->getName() == "fflush"
-             || fun->getName() == "fclose")
-          && mayBeClosed(state, cs.getArgument(0))) {
-      *errors++ = std::make_pair(inst, 0);
-    }
-
+    *followers++ = std::make_pair(inst, state[nullptr]);
   }
 }
 
@@ -149,20 +115,23 @@ printLineNumber(llvm::raw_ostream& out, llvm::Instruction& inst) {
 
 
 static void
-printErrors(llvm::ArrayRef<std::pair<llvm::Instruction*, unsigned>> errors) {
-  for (auto& [fileOperation, argNum] : errors) {
+printFollowers(llvm::ArrayRef<std::pair<llvm::Instruction*, FunctionsValue>> followers) {
+  for (auto& [callsite, after] : followers) {
     llvm::outs().changeColor(raw_ostream::Colors::RED);
-    printLineNumber(llvm::outs(), *fileOperation);
+    printLineNumber(llvm::outs(), *callsite);
 
-    auto* called = getCalledFunction(llvm::CallSite{fileOperation});
+    auto* called = getCalledFunction(llvm::CallSite{callsite});
     llvm::outs().changeColor(raw_ostream::Colors::YELLOW);
-    llvm::outs() << "In call to \"" << called->getName() << "\""
-                 << " argument (" << argNum << ") may not be an open file.\n";
+    llvm::outs() << "After call to \"" << called->getName() << "\"";
+    for (auto id : after) {
+      llvm::outs() << " " << functions[id]->getName();
+    }
+    llvm::outs() << "\n";
   }
 
-  if (errors.empty()) {
+  if (followers.empty()) {
     llvm::outs().changeColor(raw_ostream::Colors::GREEN);
-    llvm::outs() << "No errors detected\n";
+    llvm::outs() << "No followers collected\n";
   }
   llvm::outs().resetColor();
 }
@@ -176,7 +145,7 @@ main(int argc, char** argv) {
   sys::PrintStackTraceOnErrorSignal(argv[0]);
   llvm::PrettyStackTraceProgram X(argc, argv);
   llvm_shutdown_obj shutdown;
-  cl::HideUnrelatedOptions(filePolicyCategory);
+  cl::HideUnrelatedOptions(futureFunctionsCategory);
   cl::ParseCommandLineOptions(argc, argv);
 
   // Construct an IR file from the filename passed on the command line.
@@ -195,21 +164,21 @@ main(int argc, char** argv) {
     llvm::report_fatal_error("Unable to find main function.");
   }
 
-  using Value    = FileValue;
-  using Transfer = FilePolicyTransfer;
-  using Meet     = FilePolicyMeet;
-  using Analysis = analysis::DataflowAnalysis<Value, Transfer, Meet>;
+  using Value    = FunctionsValue;
+  using Transfer = FunctionsTransfer;
+  using Meet     = FunctionsMeet;
+  using Analysis = analysis::DataflowAnalysis<Value, Transfer, Meet, analysis::Backward>;
   Analysis analysis{*module, mainFunction};
   auto results = analysis.computeDataflow();
 
-  std::vector<std::pair<llvm::Instruction*, unsigned>> errors;
+  std::vector<std::pair<llvm::Instruction*, FunctionsValue>> followers;
   for (auto& [context, contextResults] : results) {
     for (auto& [function, functionResults] : contextResults) {
-      collectFileUseBugs(functionResults, std::back_inserter(errors));
+      collectFollowers(functionResults, std::back_inserter(followers));
     }
   }
 
-  printErrors(errors);
+  printFollowers(followers);
 
   return 0;
 }

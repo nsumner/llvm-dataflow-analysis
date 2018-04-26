@@ -1,6 +1,6 @@
 These programs are demonstrations of how LLVM can be used for (very simple)
-static intraprocedural dataflow analyses. The presentation is illustrative
-and does not demonstrate how to implement scalable analyses.
+static dataflow analyses (both inter- and intraprocedural). The presentation
+is illustrative and does not demonstrate how to implement scalable analyses.
 
 The provided `filepolicy` analysis identifies simple errors in using fread,
 fwrite, and fclose where they may potentially be called on files that have
@@ -9,6 +9,10 @@ already been closed.
 The provided `constant-propagation` analysis identifies simple constant values
 that can be determined at compile time. It then prints out the computable
 constant arguments to all function calls in the module.
+
+The provided `futurefunctions` analysis uses backward dataflow analysis to
+identify the functions that may be called in the future at all call sites
+in a program.
 
 Building with CMake
 ==============================================
@@ -33,7 +37,8 @@ Building with CMake
 
         make
 
-This produces tools called `bin/filepolicy` and `bin/constant-propagation`.
+This produces tools called `bin/filepolicy`, `bin/constant-propagation`,
+and `bin/futurefunctions`.
 
 Note, building with a tool like ninja can be done by adding `-G Ninja` to
 the cmake invocation and running ninja instead of make.

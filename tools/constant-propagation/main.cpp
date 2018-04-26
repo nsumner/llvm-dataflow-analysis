@@ -183,8 +183,8 @@ printLineNumber(llvm::raw_ostream& out, llvm::Instruction& inst) {
 
 static void
 printConstantArguments(ConstantResult& constantStates) {
-  for (auto& valueStatePair : constantStates) {
-    auto* inst = llvm::dyn_cast<llvm::Instruction>(valueStatePair.first);
+  for (auto& [value,localState] : constantStates) {
+    auto* inst = llvm::dyn_cast<llvm::Instruction>(value);
     if (!inst) {
       continue;
     }
@@ -248,9 +248,9 @@ main(int argc, char** argv) {
   using Value    = ConstantValue;
   using Transfer = ConstantTransfer;
   using Meet     = ConstantMeet;
-  using Analysis = analysis::ForwardDataflowAnalysis<Value, Transfer, Meet>;
+  using Analysis = analysis::DataflowAnalysis<Value, Transfer, Meet>;
   Analysis analysis{*module, mainFunction};
-  auto results = analysis.computeForwardDataflow();
+  auto results = analysis.computeDataflow();
   for (auto& [context, contextResults] : results) {
     for (auto& [function, functionResults] : contextResults) {
       printConstantArguments(functionResults);

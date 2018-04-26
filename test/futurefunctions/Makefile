@@ -1,6 +1,6 @@
-# This makefile can help you to build test inputs for the file policy demo
-# You must define the CHECKER variable below to contain the path to the
-# compiled filepolicy binary. You may wish to set the paths for CLANG and
+# This makefile can help you to build test inputs for the future functions
+# demo.  You must define the CHECKER variable below to contain the path to the
+# compiled futurefunctions binary. You may wish to set the paths for CLANG and
 # OPT, as well.
 #
 # To build LLVM assembly files from C source files:
@@ -11,7 +11,7 @@
 #
 
 #LLVM_BIN     := /usr/shared/CMPT/wsumner/llvm/bin/
-CHECKER      := ../../../dfbuild/bin/filepolicy
+CHECKER      := ../../../dfbuild/bin/futurefunctions
 CLANG        := $(LLVM_BIN)clang
 OPT          := $(LLVM_BIN)opt
 RM           := rm

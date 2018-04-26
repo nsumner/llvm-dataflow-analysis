@@ -10,7 +10,7 @@ set(PACKAGE_STRING "${PACKAGE_NAME} ${PACKAGE_VERSION}")
 set(PACKAGE_BUGREPORT "wsumner@sfu.ca")
 
 set(CMAKE_BUILD_TYPE Debug)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++1z -fno-rtti -Wall")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17 -fno-rtti -Wall")
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/bin")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/lib")
@@ -27,7 +27,7 @@ message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
 list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
 include(AddLLVM)
 
-option(LLVM_ENABLE_CXX1Y  "Enable C++14" ON)
+option(LLVM_ENABLE_CXX1Z  "Enable C++17" ON)
 option(LLVM_INCLUDE_TOOLS "Generate build targets for the LLVM tools." ON)
 option(LLVM_BUILD_TOOLS
   "Build the LLVM tools. If OFF, just generate build targets." ON
